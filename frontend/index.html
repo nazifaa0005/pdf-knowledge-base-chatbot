@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Knowledge Base Chatbot</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f4f6fa;
+      margin: 0;
+      color: #202633;
+    }
+
+    main {
+      max-width: 720px;
+      margin: 32px auto;
+      padding: 24px;
+      background: white;
+      border-radius: 12px;
+    }
+
+    form {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 16px 0;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      min-width: 220px;
+      padding: 10px;
+    }
+
+    button {
+      padding: 10px 16px;
+      cursor: pointer;
+    }
+
+    #messages {
+      min-height: 280px;
+      max-height: 55vh;
+      border: 1px solid #d5d9e2;
+      border-radius: 8px;
+      padding: 12px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Knowledge Base Chatbot</h1>
+    <p>Upload a PDF knowledge base, then ask questions about it.</p>
+
+    <form id="upload-form">
+      <label for="pdf-file">Choose a PDF:</label>
+      <input id="pdf-file" type="file" accept=".pdf,application/pdf" required>
+      <button type="submit">Upload PDF</button>
+    </form>
+    <p id="upload-status" role="status">Checking for a saved PDF...</p>
+
+    <section id="messages" aria-label="Chat messages" aria-live="polite"></section>
+
+    <form id="chat-form">
+      <label for="question">Your question:</label>
+      <input id="question" type="text" maxlength="1000" required>
+      <button type="submit">Send</button>
+    </form>
+  </main>
+
+  <script>
+  const uploadForm = document.getElementById("upload-form");
+  const fileInput = document.getElementById("pdf-file");
+  const uploadStatus = document.getElementById("upload-status");
+  const chatForm = document.getElementById("chat-form");
+  const questionInput = document.getElementById("question");
+  const messages = document.getElementById("messages");
+  let loaded = false;
+  let busy = false;
+
+  function updateControls() {
+    uploadForm.querySelector("button").disabled = busy;
+    fileInput.disabled = busy;
+    questionInput.disabled = busy || !loaded;
+    chatForm.querySelector("button").disabled = busy || !loaded;
+  }
+  function showStatus(result) {
+    loaded = Boolean(result.loaded);
+    uploadStatus.textContent = loaded
+      ? `Loaded ${result.filename}: ${result.pages} pages, ${result.chunks} passages.`
+      : "Choose a PDF and click Upload PDF to begin.";
+    updateControls();
+  }
+  async function readResponse(response) {
+    const result = await response.json();
+    if (!response.ok) {
+      const detail = typeof result.detail === "string" ? result.detail
+        : "The request could not be processed. Check your input.";
+      const error = new Error(detail);
+      error.status = response.status;
+      throw error;
+    }
+    return result;
+  }
+  async function refreshStatus() {
+    try {
+      showStatus(await readResponse(await fetch("/api/knowledge-base")));
+    } catch (error) {
+      loaded = false;
+      uploadStatus.textContent = `Cannot reach the server: ${error.message}`;
+      updateControls();
+    }
+  }
+  function addMessage(sender, text) {
+    const message = document.createElement("p");
+    message.textContent = `${sender}: ${text}`;
+    messages.appendChild(message);
+    messages.scrollTop = messages.scrollHeight;
+    return message;
+  }
+
+  uploadForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (busy) return;
+    const file = fileInput.files[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      uploadStatus.textContent = "Please choose a PDF smaller than 10 MB.";
+      return;
+    }
+    busy = true; updateControls();
+    const formData = new FormData();
+    formData.append("file", file);
+    uploadStatus.textContent = "Processing PDF...";
+    try {
+      const result = await readResponse(await fetch("/api/knowledge-base", {
+        method: "POST", body: formData
+      }));
+      messages.replaceChildren();
+      showStatus(result);
+    } catch (error) {
+      await refreshStatus();
+      uploadStatus.textContent += ` Upload error: ${error.message}`;
+    } finally {
+      busy = false; updateControls();
+    }
+  });
+
+  chatForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (busy || !loaded) return;
+    const question = questionInput.value.trim();
+    if (!question) return;
+    busy = true; updateControls();
+    addMessage("You", question);
+    questionInput.value = "";
+    const reply = addMessage("Bot", "Thinking...");
+    try {
+      const result = await readResponse(await fetch("/api/chat", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({question})
+      }));
+      const source = result.page == null ? ""
+        : ` (Source: ${result.filename}, page ${result.page})`;
+      reply.textContent = `Bot: ${result.answer}${source}`;
+    } catch (error) {
+      reply.textContent = `Bot: ${error.message}`;
+      if (error.status === 409) await refreshStatus();
+    } finally {
+      busy = false; updateControls();
+      messages.scrollTop = messages.scrollHeight;
+      questionInput.focus();
+    }
+  });
+  updateControls();
+  refreshStatus();
+  </script>
+</body>
+</html>
